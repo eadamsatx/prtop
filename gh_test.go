@@ -162,6 +162,32 @@ func TestParseDuration(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// formatDuration
+// ---------------------------------------------------------------------------
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		seconds int
+		want    string
+	}{
+		{0, "0s"},
+		{5, "5s"},
+		{59, "59s"},
+		{60, "1m00s"},
+		{90, "1m30s"},
+		{155, "2m35s"},
+		{3600, "60m00s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := formatDuration(tt.seconds); got != tt.want {
+				t.Errorf("formatDuration(%d) = %q, want %q", tt.seconds, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // exec mock helpers
 // ---------------------------------------------------------------------------
 

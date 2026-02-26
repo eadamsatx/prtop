@@ -115,15 +115,16 @@ func parseDuration(startedAt string, completedAt string) (string, time.Time, boo
 	if delta < 0 {
 		delta = 0
 	}
-	minutes := delta / 60
-	seconds := delta % 60
-	var dur string
+	return formatDuration(delta), start, completed
+}
+
+func formatDuration(totalSeconds int) string {
+	minutes := totalSeconds / 60
+	seconds := totalSeconds % 60
 	if minutes > 0 {
-		dur = fmt.Sprintf("%dm%02ds", minutes, seconds)
-	} else {
-		dur = fmt.Sprintf("%ds", seconds)
+		return fmt.Sprintf("%dm%02ds", minutes, seconds)
 	}
-	return dur, start, completed
+	return fmt.Sprintf("%ds", seconds)
 }
 
 type PRSummary struct {

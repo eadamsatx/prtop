@@ -64,8 +64,9 @@ type model struct {
 	width    int
 	height   int
 	// Selection mode fields
-	prs     []PRSummary
-	loading bool
+	prs        []PRSummary
+	loading    bool
+	canGoBack  bool // true when started in selecting mode
 	// Filtering and scrolling
 	hideSkipped bool // default: true
 	scrollOff   int  // first visible row index (into filtered list)
@@ -87,6 +88,7 @@ func newSelectModel(interval time.Duration) model {
 		interval:    interval,
 		loading:     true,
 		hideSkipped: true,
+		canGoBack:   true,
 	}
 }
 
@@ -141,6 +143,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
+		case tea.KeyEsc:
+			if m.mode == modeViewing && m.canGoBack {
+				m.mode = modeSelecting
+				m.selected = 0
+				m.scrollOff = 0
+				m.prData = nil
+				m.err = nil
+				m.loading = true
+				return m, fetchPRListCmd()
+			}
 		case tea.KeyUp:
 			if m.selected > 0 {
 				m.selected--
@@ -472,13 +484,7 @@ func (m model) View() string {
 			if delta < 0 {
 				delta = 0
 			}
-			minutes := delta / 60
-			seconds := delta % 60
-			if minutes > 0 {
-				dur = fmt.Sprintf("%dm%02ds", minutes, seconds)
-			} else {
-				dur = fmt.Sprintf("%ds", seconds)
-			}
+			dur = formatDuration(delta)
 		}
 
 		isSelected := (idx + m.scrollOff) == m.selected
@@ -495,9 +501,10 @@ func (m model) View() string {
 		if nameMaxW < 0 {
 			nameMaxW = 0
 		}
+		nameRunes := []rune(check.Name)
 		nameStr := check.Name
-		if len(nameStr) > nameMaxW {
-			nameStr = nameStr[:nameMaxW]
+		if len(nameRunes) > nameMaxW {
+			nameStr = string(nameRunes[:nameMaxW])
 		}
 
 		// Apply status color
@@ -551,16 +558,21 @@ func (m model) View() string {
 	if !m.hideSkipped {
 		filterHint = "s: hide skipped"
 	}
-	footer := fmt.Sprintf("Refresh: %ds | %s | up/down: select | enter: open | r: refresh | q: quit",
-		int(m.interval.Seconds()), filterHint)
+	backHint := ""
+	if m.canGoBack {
+		backHint = " | esc: back"
+	}
+	footer := fmt.Sprintf("Refresh: %ds | %s | up/down: select | enter: open | r: refresh%s | q: quit",
+		int(m.interval.Seconds()), filterHint, backHint)
 	b.WriteString(styleDim.Render(truncate(footer, maxWidth)))
 
 	return b.String()
 }
 
 func truncate(s string, maxWidth int) string {
-	if len(s) > maxWidth && maxWidth > 0 {
-		return s[:maxWidth]
+	r := []rune(s)
+	if len(r) > maxWidth && maxWidth > 0 {
+		return string(r[:maxWidth])
 	}
 	return s
 }

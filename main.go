@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,9 @@ func parsePRURL(url string) (repo string, prNumber string, ok bool) {
 	repo = parts[3] + "/" + parts[4]
 	prNumber = parts[6]
 	if prNumber == "" {
+		return "", "", false
+	}
+	if _, err := strconv.Atoi(prNumber); err != nil {
 		return "", "", false
 	}
 	return repo, prNumber, true
@@ -73,6 +77,10 @@ func main() {
 		}
 		m = newModel(repo, prNumber, dur)
 	default:
+		if _, err := strconv.Atoi(args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: PR number must be numeric: %s\n", args[1])
+			os.Exit(1)
+		}
 		m = newModel(args[0], args[1], dur)
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())

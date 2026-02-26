@@ -114,6 +114,9 @@ func TestNewSelectModel(t *testing.T) {
 	if !m.loading {
 		t.Error("loading should be true")
 	}
+	if !m.canGoBack {
+		t.Error("canGoBack should be true")
+	}
 	if m.interval != 10*time.Second {
 		t.Errorf("interval = %v, want %v", m.interval, 10*time.Second)
 	}
@@ -469,6 +472,62 @@ func TestModelUpdate(t *testing.T) {
 			t.Errorf("selected = %d, want 0 (clamped to filtered len-1)", um.selected)
 		}
 	})
+
+	t.Run("Esc in viewing mode with canGoBack returns to selecting", func(t *testing.T) {
+		m := newSelectModel(5 * time.Second)
+		// Simulate having selected a PR and transitioned to viewing
+		m.mode = modeViewing
+		m.repo = "owner/repo"
+		m.prNumber = "42"
+		m.prData = &PRData{Checks: []Check{{Name: "a"}}}
+		m.selected = 1
+		m.scrollOff = 1
+		m.loading = false
+
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		um := updated.(model)
+		if um.mode != modeSelecting {
+			t.Errorf("mode = %v, want modeSelecting", um.mode)
+		}
+		if um.selected != 0 {
+			t.Errorf("selected = %d, want 0 (reset)", um.selected)
+		}
+		if um.scrollOff != 0 {
+			t.Errorf("scrollOff = %d, want 0 (reset)", um.scrollOff)
+		}
+		if um.prData != nil {
+			t.Error("prData should be nil after going back")
+		}
+		if !um.loading {
+			t.Error("loading should be true after going back")
+		}
+		if cmd == nil {
+			t.Error("expected cmd for fetchPRList")
+		}
+	})
+
+	t.Run("Esc in viewing mode without canGoBack does nothing", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.prData = &PRData{Checks: []Check{{Name: "a"}}}
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		um := updated.(model)
+		if um.mode != modeViewing {
+			t.Errorf("mode = %v, want modeViewing (no back)", um.mode)
+		}
+	})
+
+	t.Run("Esc in selecting mode does nothing", func(t *testing.T) {
+		m := newSelectModel(5 * time.Second)
+		m.loading = false
+		m.prs = []PRSummary{{Repo: "a"}}
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		um := updated.(model)
+		if um.mode != modeSelecting {
+			t.Errorf("mode = %v, want modeSelecting", um.mode)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -710,6 +769,29 @@ func TestView(t *testing.T) {
 		out = m.View()
 		if !strings.Contains(out, "s: hide skipped") {
 			t.Error("footer should contain 's: hide skipped' when hideSkipped=false")
+		}
+	})
+
+	t.Run("footer shows esc hint when canGoBack", func(t *testing.T) {
+		m := newSelectModel(5 * time.Second)
+		m.mode = modeViewing
+		m.width = 120
+		m.height = 30
+		m.prData = &PRData{
+			Title:       "Test PR",
+			HeadRefName: "feature",
+			Checks:      []Check{{Name: "a", Status: Pass}},
+		}
+		out := m.View()
+		if !strings.Contains(out, "esc: back") {
+			t.Error("footer should contain 'esc: back' when canGoBack=true")
+		}
+
+		// Without canGoBack, no esc hint
+		m.canGoBack = false
+		out = m.View()
+		if strings.Contains(out, "esc: back") {
+			t.Error("footer should not contain 'esc: back' when canGoBack=false")
 		}
 	})
 }

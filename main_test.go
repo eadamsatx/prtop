@@ -44,6 +44,11 @@ func TestParsePRURL(t *testing.T) {
 			url:    "",
 			wantOK: false,
 		},
+		{
+			name:   "non-numeric PR number",
+			url:    "https://github.com/owner/repo/pull/abc",
+			wantOK: false,
+		},
 	}
 
 	for _, tt := range tests {
