@@ -1,2 +1,51 @@
 # prtop
-Display PR tasks in a similar way to top jobs
+
+A live-updating terminal UI for GitHub PR check statuses, similar to `top`.
+
+## Prerequisites
+
+- Go 1.21+
+- [`gh` CLI](https://cli.github.com/) installed and authenticated
+
+## Build
+
+```sh
+make build
+```
+
+This produces a `./prtop` binary.
+
+## Install
+
+```sh
+make install
+```
+
+Or install directly:
+
+```sh
+go install github.com/eadamsatx/prtop@latest
+```
+
+## Usage
+
+```sh
+# Using a PR URL
+prtop https://github.com/owner/repo/pull/123
+
+# Using owner/repo and PR number
+prtop owner/repo 123
+
+# With custom refresh interval (default: 5s)
+prtop --interval 10 owner/repo 123
+```
+
+## Keybindings
+
+| Key         | Action                        |
+|-------------|-------------------------------|
+| `q`         | Quit                          |
+| `r`         | Force refresh                 |
+| `up` / `k`  | Move selection up             |
+| `down` / `j`| Move selection down           |
+| `enter`     | Open selected check in browser|
