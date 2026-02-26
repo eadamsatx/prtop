@@ -63,6 +63,7 @@ type ghCheckItem struct {
 	Context      string `json:"context"`
 	Status       string `json:"status"`
 	Conclusion   string `json:"conclusion"`
+	State        string `json:"state"`
 	StartedAt    string `json:"startedAt"`
 	CompletedAt  string `json:"completedAt"`
 	DetailsURL   string `json:"detailsUrl"`
@@ -123,6 +124,56 @@ func parseDuration(startedAt string, completedAt string) (string, time.Time, boo
 	return dur, start, completed
 }
 
+type PRSummary struct {
+	Repo      string
+	Number    int
+	Title     string
+	URL       string
+	UpdatedAt string
+}
+
+func fetchRecentPRs() ([]PRSummary, error) {
+	cmd := exec.Command("gh", "search", "prs",
+		"--author=@me",
+		"--state=open",
+		"--sort=updated",
+		"--limit=5",
+		"--json", "number,title,repository,url,updatedAt",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("gh CLI error: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, fmt.Errorf("gh CLI error: %w", err)
+	}
+
+	var raw []struct {
+		Number     int    `json:"number"`
+		Title      string `json:"title"`
+		Repository struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		} `json:"repository"`
+		URL       string `json:"url"`
+		UpdatedAt string `json:"updatedAt"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse gh output: %w", err)
+	}
+
+	prs := make([]PRSummary, len(raw))
+	for i, r := range raw {
+		prs[i] = PRSummary{
+			Repo:      r.Repository.NameWithOwner,
+			Number:    r.Number,
+			Title:     r.Title,
+			URL:       r.URL,
+			UpdatedAt: r.UpdatedAt,
+		}
+	}
+	return prs, nil
+}
+
 func fetchPRData(repo string, prNumber string) (*PRData, error) {
 	cmd := exec.Command("gh", "pr", "view", prNumber,
 		"--repo", repo,
@@ -157,13 +208,20 @@ func fetchPRData(repo string, prNumber string) (*PRData, error) {
 		var status CheckStatus
 		if item.Conclusion != "" {
 			status = normalizeStatus(item.Conclusion)
-		} else {
+		} else if item.Status != "" {
 			status = normalizeStatus(item.Status)
+		} else {
+			status = normalizeStatus(item.State)
 		}
 
 		completedAt := item.CompletedAt
 		if strings.HasPrefix(completedAt, "0001") {
 			completedAt = ""
+		}
+
+		// StatusContext items don't have completedAt — treat terminal states as completed
+		if completedAt == "" && item.Typename == "StatusContext" && status != Running {
+			completedAt = item.StartedAt
 		}
 
 		dur, startedAt, completed := parseDuration(item.StartedAt, completedAt)

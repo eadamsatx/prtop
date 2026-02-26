@@ -30,6 +30,9 @@ go install github.com/eadamsatx/prtop@latest
 ## Usage
 
 ```sh
+# Pick from your recent open PRs
+prtop
+
 # Using a PR URL
 prtop https://github.com/owner/repo/pull/123
 
@@ -39,6 +42,8 @@ prtop owner/repo 123
 # With custom refresh interval (default: 5s)
 prtop --interval 10 owner/repo 123
 ```
+
+When run with no arguments, `prtop` shows your 5 most recent open PRs (across all repos) and lets you pick one to view.
 
 ## Keybindings
 

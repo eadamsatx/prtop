@@ -21,6 +21,22 @@ var (
 	styleDim     = lipgloss.NewStyle().Faint(true)
 	styleUnder   = lipgloss.NewStyle().Underline(true)
 	styleReverse = lipgloss.NewStyle().Reverse(true)
+
+	styleHeader     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
+	styleRepo       = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	stylePRNumber   = lipgloss.NewStyle().Foreground(lipgloss.Color("213"))
+	styleTitle      = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	styleUpdatedAt  = lipgloss.NewStyle().Faint(true)
+	styleSelected   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86"))
+	styleSelectedBg = lipgloss.NewStyle().Background(lipgloss.Color("236"))
+)
+
+// View modes
+type viewMode int
+
+const (
+	modeSelecting viewMode = iota
+	modeViewing
 )
 
 // Messages
@@ -29,10 +45,16 @@ type prDataMsg struct {
 	err  error
 }
 
+type prListMsg struct {
+	prs []PRSummary
+	err error
+}
+
 type tickMsg time.Time
 
 // Model
 type model struct {
+	mode     viewMode
 	repo     string
 	prNumber string
 	interval time.Duration
@@ -41,17 +63,39 @@ type model struct {
 	selected int
 	width    int
 	height   int
+	// Selection mode fields
+	prs     []PRSummary
+	loading bool
 }
 
 func newModel(repo, prNumber string, interval time.Duration) model {
 	return model{
+		mode:     modeViewing,
 		repo:     repo,
 		prNumber: prNumber,
 		interval: interval,
 	}
 }
 
+func newSelectModel(interval time.Duration) model {
+	return model{
+		mode:     modeSelecting,
+		interval: interval,
+		loading:  true,
+	}
+}
+
+func fetchPRListCmd() tea.Cmd {
+	return func() tea.Msg {
+		prs, err := fetchRecentPRs()
+		return prListMsg{prs: prs, err: err}
+	}
+}
+
 func (m model) Init() tea.Cmd {
+	if m.mode == modeSelecting {
+		return fetchPRListCmd()
+	}
 	return tea.Batch(m.fetchCmd(), m.tickCmd())
 }
 
@@ -81,11 +125,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selected--
 			}
 		case tea.KeyDown:
-			if m.prData != nil && m.selected < len(m.prData.Checks)-1 {
+			if m.mode == modeSelecting {
+				if len(m.prs) > 0 && m.selected < len(m.prs)-1 {
+					m.selected++
+				}
+			} else if m.prData != nil && m.selected < len(m.prData.Checks)-1 {
 				m.selected++
 			}
 		case tea.KeyEnter:
-			if m.prData != nil && len(m.prData.Checks) > 0 {
+			if m.mode == modeSelecting {
+				if len(m.prs) > 0 {
+					pr := m.prs[m.selected]
+					m.repo = pr.Repo
+					m.prNumber = fmt.Sprintf("%d", pr.Number)
+					m.mode = modeViewing
+					m.selected = 0
+					m.prData = nil
+					m.err = nil
+					return m, tea.Batch(m.fetchCmd(), m.tickCmd())
+				}
+			} else if m.prData != nil && len(m.prData.Checks) > 0 {
 				check := m.prData.Checks[m.selected]
 				if check.DetailsURL != "" {
 					openBrowser(check.DetailsURL)
@@ -96,16 +155,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "q":
 				return m, tea.Quit
 			case "r":
+				if m.mode == modeSelecting {
+					m.loading = true
+					return m, fetchPRListCmd()
+				}
 				return m, m.fetchCmd()
 			case "k":
 				if m.selected > 0 {
 					m.selected--
 				}
 			case "j":
-				if m.prData != nil && m.selected < len(m.prData.Checks)-1 {
+				if m.mode == modeSelecting {
+					if len(m.prs) > 0 && m.selected < len(m.prs)-1 {
+						m.selected++
+					}
+				} else if m.prData != nil && m.selected < len(m.prData.Checks)-1 {
 					m.selected++
 				}
 			}
+		}
+
+	case prListMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.prs = msg.prs
+			m.err = nil
+			m.selected = 0
 		}
 
 	case prDataMsg:
@@ -135,7 +212,105 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func relativeTime(updatedAt string) string {
+	t, err := time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+func (m model) viewSelecting() string {
+	if m.width == 0 {
+		return "Loading..."
+	}
+
+	var b strings.Builder
+	maxWidth := m.width
+
+	// Header
+	b.WriteString(styleHeader.Render("  prtop"))
+	b.WriteString("\n")
+	b.WriteString(styleDim.Render("  Your recent open pull requests"))
+	b.WriteString("\n\n")
+
+	if m.err != nil {
+		b.WriteString(styleFail.Render(truncate(fmt.Sprintf("Error: %s", m.err), maxWidth)))
+		b.WriteString("\n\n")
+		b.WriteString(styleDim.Render("r: retry | q: quit"))
+		return b.String()
+	}
+
+	if m.loading {
+		b.WriteString("Fetching your open PRs...")
+		return b.String()
+	}
+
+	if len(m.prs) == 0 {
+		b.WriteString("No open PRs found.")
+		b.WriteString("\n\n")
+		b.WriteString(styleDim.Render("r: retry | q: quit"))
+		return b.String()
+	}
+
+	for idx, pr := range m.prs {
+		isSelected := idx == m.selected
+		marker := "  "
+		if isSelected {
+			marker = styleSelected.Render("▸ ")
+		}
+
+		// Line 1: marker + repo + #number
+		repoStr := styleRepo.Render(pr.Repo)
+		numStr := stylePRNumber.Render(fmt.Sprintf("#%d", pr.Number))
+		line1 := marker + repoStr + " " + numStr
+
+		// Line 2: title + updated timestamp
+		titleStr := styleTitle.Render(pr.Title)
+		updated := relativeTime(pr.UpdatedAt)
+		line2 := "  " + titleStr
+		if updated != "" {
+			line2 += "  " + styleUpdatedAt.Render("updated "+updated)
+		}
+
+		if isSelected {
+			b.WriteString(styleSelectedBg.Render(line1))
+			b.WriteString("\n")
+			b.WriteString(styleSelectedBg.Render(line2))
+		} else {
+			b.WriteString(line1)
+			b.WriteString("\n")
+			b.WriteString(line2)
+		}
+		b.WriteString("\n\n")
+	}
+
+	// Pad to bottom — each PR uses 3 lines (line1 + line2 + blank), header uses 3
+	linesUsed := 3 + len(m.prs)*3
+	for i := linesUsed; i < m.height-1; i++ {
+		b.WriteString("\n")
+	}
+
+	b.WriteString(styleDim.Render(truncate("up/down: select | enter: view PR | q: quit", maxWidth)))
+
+	return b.String()
+}
+
 func (m model) View() string {
+	if m.mode == modeSelecting {
+		return m.viewSelecting()
+	}
+
 	if m.width == 0 {
 		return "Loading..."
 	}

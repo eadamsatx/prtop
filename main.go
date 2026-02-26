@@ -33,9 +33,11 @@ func parsePRURL(url string) (repo string, prNumber string, ok bool) {
 func main() {
 	interval := flag.Int("interval", 5, "Refresh interval in seconds")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: prtop [--interval N] <PR-URL | owner/repo PR-number>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: prtop [--interval N] [PR-URL | owner/repo PR-number]\n\n")
 		fmt.Fprintf(os.Stderr, "Live-updating terminal UI for GitHub PR check statuses.\n\n")
+		fmt.Fprintf(os.Stderr, "When run with no arguments, shows your 5 most recent open PRs to select from.\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
+		fmt.Fprintf(os.Stderr, "  prtop                                            # pick from recent PRs\n")
 		fmt.Fprintf(os.Stderr, "  prtop https://github.com/owner/repo/pull/123\n")
 		fmt.Fprintf(os.Stderr, "  prtop owner/repo 123\n")
 		fmt.Fprintf(os.Stderr, "  prtop --interval 10 owner/repo 123\n\n")
@@ -45,23 +47,9 @@ func main() {
 	flag.Parse()
 
 	args := flag.Args()
-	if len(args) < 1 || len(args) > 2 {
+	if len(args) > 2 {
 		flag.Usage()
 		os.Exit(1)
-	}
-
-	var repo, prNumber string
-	if len(args) == 1 {
-		var ok bool
-		repo, prNumber, ok = parsePRURL(args[0])
-		if !ok {
-			fmt.Fprintf(os.Stderr, "Error: invalid PR URL: %s\n", args[0])
-			fmt.Fprintf(os.Stderr, "Expected format: https://github.com/owner/repo/pull/123\n")
-			os.Exit(1)
-		}
-	} else {
-		repo = args[0]
-		prNumber = args[1]
 	}
 
 	// Check gh is available
@@ -71,7 +59,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	m := newModel(repo, prNumber, time.Duration(*interval)*time.Second)
+	var m model
+	dur := time.Duration(*interval) * time.Second
+	switch len(args) {
+	case 0:
+		m = newSelectModel(dur)
+	case 1:
+		repo, prNumber, ok := parsePRURL(args[0])
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Error: invalid PR URL: %s\n", args[0])
+			fmt.Fprintf(os.Stderr, "Expected format: https://github.com/owner/repo/pull/123\n")
+			os.Exit(1)
+		}
+		m = newModel(repo, prNumber, dur)
+	default:
+		m = newModel(args[0], args[1], dur)
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
