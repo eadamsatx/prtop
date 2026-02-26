@@ -101,6 +101,9 @@ func TestNewModel(t *testing.T) {
 	if m.interval != 5*time.Second {
 		t.Errorf("interval = %v, want %v", m.interval, 5*time.Second)
 	}
+	if !m.hideSkipped {
+		t.Error("hideSkipped should default to true")
+	}
 }
 
 func TestNewSelectModel(t *testing.T) {
@@ -113,6 +116,9 @@ func TestNewSelectModel(t *testing.T) {
 	}
 	if m.interval != 10*time.Second {
 		t.Errorf("interval = %v, want %v", m.interval, 10*time.Second)
+	}
+	if !m.hideSkipped {
+		t.Error("hideSkipped should default to true")
 	}
 }
 
@@ -365,6 +371,104 @@ func TestModelUpdate(t *testing.T) {
 			t.Errorf("height = %d, want 40", um.height)
 		}
 	})
+
+	t.Run("s toggles hideSkipped", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.hideSkipped = true
+		m.selected = 3
+		m.scrollOff = 2
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+		um := updated.(model)
+		if um.hideSkipped {
+			t.Error("hideSkipped should be false after toggle")
+		}
+		if um.selected != 0 {
+			t.Errorf("selected = %d, want 0 (reset)", um.selected)
+		}
+		if um.scrollOff != 0 {
+			t.Errorf("scrollOff = %d, want 0 (reset)", um.scrollOff)
+		}
+
+		// Toggle back
+		updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+		um = updated.(model)
+		if !um.hideSkipped {
+			t.Error("hideSkipped should be true after second toggle")
+		}
+	})
+
+	t.Run("s does nothing in selecting mode", func(t *testing.T) {
+		m := newSelectModel(5 * time.Second)
+		m.hideSkipped = true
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+		um := updated.(model)
+		if !um.hideSkipped {
+			t.Error("hideSkipped should remain true in selecting mode")
+		}
+	})
+
+	t.Run("navigation with filtering clamps to filtered length", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.height = 40
+		m.prData = &PRData{Checks: []Check{
+			{Name: "build", Status: Pass},
+			{Name: "skip1", Status: Skipped},
+			{Name: "lint", Status: Fail},
+			{Name: "skip2", Status: Skipped},
+		}}
+		m.hideSkipped = true
+		m.selected = 1 // at last filtered item (build, lint → 2 items, idx 0,1)
+
+		// j should not go beyond 1 (len(filtered)-1)
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+		um := updated.(model)
+		if um.selected != 1 {
+			t.Errorf("selected = %d, want 1 (clamped to filtered len-1)", um.selected)
+		}
+	})
+
+	t.Run("Enter with filtering opens correct check", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.height = 40
+		m.prData = &PRData{Checks: []Check{
+			{Name: "build", Status: Pass, DetailsURL: "http://build"},
+			{Name: "skip1", Status: Skipped, DetailsURL: "http://skip1"},
+			{Name: "lint", Status: Fail, DetailsURL: "http://lint"},
+		}}
+		m.hideSkipped = true
+		m.selected = 1 // should be "lint" in filtered view
+
+		// We can't easily test the browser opening, but we can verify
+		// the filtered list indexes correctly
+		checks := m.filteredChecks()
+		if len(checks) != 2 {
+			t.Fatalf("filtered checks = %d, want 2", len(checks))
+		}
+		if checks[1].Name != "lint" {
+			t.Errorf("filtered[1].Name = %q, want %q", checks[1].Name, "lint")
+		}
+	})
+
+	t.Run("prDataMsg clamps to filtered length", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.height = 40
+		m.hideSkipped = true
+		m.selected = 5
+
+		data := &PRData{Checks: []Check{
+			{Name: "build", Status: Pass},
+			{Name: "skip1", Status: Skipped},
+			{Name: "skip2", Status: Skipped},
+		}}
+		updated, _ := m.Update(prDataMsg{data: data})
+		um := updated.(model)
+		// Only 1 non-skipped check, so selected should clamp to 0
+		if um.selected != 0 {
+			t.Errorf("selected = %d, want 0 (clamped to filtered len-1)", um.selected)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -547,6 +651,214 @@ func TestView(t *testing.T) {
 		}
 		if !strings.Contains(out, "feature") {
 			t.Error("output should contain branch name")
+		}
+	})
+
+	t.Run("with filtering active skipped checks not shown", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.width = 120
+		m.height = 30
+		m.hideSkipped = true
+		m.prData = &PRData{
+			Title:       "Test PR",
+			HeadRefName: "feature",
+			Checks: []Check{
+				{Name: "build", Status: Pass, Duration: "1m30s", Completed: true},
+				{Name: "skip-me", Status: Skipped, Duration: "", Completed: true},
+				{Name: "lint", Status: Fail, Duration: "20s", Completed: true},
+			},
+		}
+		out := m.View()
+
+		// Non-skipped checks should be present
+		if !strings.Contains(out, "build") {
+			t.Error("output should contain 'build'")
+		}
+		if !strings.Contains(out, "lint") {
+			t.Error("output should contain 'lint'")
+		}
+		// Skipped check should NOT be present
+		if strings.Contains(out, "skip-me") {
+			t.Error("output should not contain 'skip-me' when filtering is active")
+		}
+		// Summary should show hidden count
+		if !strings.Contains(out, "(1 hidden)") {
+			t.Error("output should contain '(1 hidden)'")
+		}
+		// Summary should still show total from unfiltered
+		if !strings.Contains(out, "3 total") {
+			t.Error("output should contain '3 total' from unfiltered checks")
+		}
+	})
+
+	t.Run("footer shows correct filter toggle text", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.width = 120
+		m.height = 30
+		m.hideSkipped = true
+		m.prData = &PRData{
+			Title:       "Test PR",
+			HeadRefName: "feature",
+			Checks:      []Check{{Name: "a", Status: Pass}},
+		}
+		out := m.View()
+		if !strings.Contains(out, "s: show skipped") {
+			t.Error("footer should contain 's: show skipped' when hideSkipped=true")
+		}
+
+		m.hideSkipped = false
+		out = m.View()
+		if !strings.Contains(out, "s: hide skipped") {
+			t.Error("footer should contain 's: hide skipped' when hideSkipped=false")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// filteredChecks
+// ---------------------------------------------------------------------------
+
+func TestFilteredChecks(t *testing.T) {
+	t.Run("nil prData returns nil", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.prData = nil
+		got := m.filteredChecks()
+		if got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("hideSkipped=false returns all checks", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.hideSkipped = false
+		m.prData = &PRData{Checks: []Check{
+			{Name: "a", Status: Pass},
+			{Name: "b", Status: Skipped},
+			{Name: "c", Status: Fail},
+		}}
+		got := m.filteredChecks()
+		if len(got) != 3 {
+			t.Errorf("len = %d, want 3", len(got))
+		}
+	})
+
+	t.Run("hideSkipped=true excludes Skipped checks", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.hideSkipped = true
+		m.prData = &PRData{Checks: []Check{
+			{Name: "a", Status: Pass},
+			{Name: "b", Status: Skipped},
+			{Name: "c", Status: Fail},
+			{Name: "d", Status: Skipped},
+		}}
+		got := m.filteredChecks()
+		if len(got) != 2 {
+			t.Errorf("len = %d, want 2", len(got))
+		}
+		if got[0].Name != "a" {
+			t.Errorf("got[0].Name = %q, want %q", got[0].Name, "a")
+		}
+		if got[1].Name != "c" {
+			t.Errorf("got[1].Name = %q, want %q", got[1].Name, "c")
+		}
+	})
+
+	t.Run("all skipped returns empty slice", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.hideSkipped = true
+		m.prData = &PRData{Checks: []Check{
+			{Name: "a", Status: Skipped},
+			{Name: "b", Status: Skipped},
+		}}
+		got := m.filteredChecks()
+		if len(got) != 0 {
+			t.Errorf("len = %d, want 0", len(got))
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// scroll offset
+// ---------------------------------------------------------------------------
+
+func TestScrollOffset(t *testing.T) {
+	t.Run("selected beyond viewport adjusts scrollOff", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.height = 12 // maxRows = 12 - 8 = 4
+		m.hideSkipped = false
+		m.prData = &PRData{Checks: []Check{
+			{Name: "a", Status: Pass},
+			{Name: "b", Status: Pass},
+			{Name: "c", Status: Pass},
+			{Name: "d", Status: Pass},
+			{Name: "e", Status: Pass},
+			{Name: "f", Status: Pass},
+		}}
+		m.selected = 0
+		m.scrollOff = 0
+
+		// Navigate down past viewport
+		for i := 0; i < 5; i++ {
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+			m = updated.(model)
+		}
+		if m.selected != 5 {
+			t.Errorf("selected = %d, want 5", m.selected)
+		}
+		// scrollOff should have adjusted: selected(5) >= scrollOff + maxRows(4)
+		// so scrollOff = 5 - 4 + 1 = 2
+		if m.scrollOff != 2 {
+			t.Errorf("scrollOff = %d, want 2", m.scrollOff)
+		}
+	})
+
+	t.Run("selected above viewport adjusts scrollOff", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.height = 12 // maxRows = 4
+		m.hideSkipped = false
+		m.prData = &PRData{Checks: []Check{
+			{Name: "a", Status: Pass},
+			{Name: "b", Status: Pass},
+			{Name: "c", Status: Pass},
+			{Name: "d", Status: Pass},
+			{Name: "e", Status: Pass},
+		}}
+		m.selected = 2
+		m.scrollOff = 2
+
+		// Navigate up past scroll offset
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+		m = updated.(model)
+		if m.selected != 1 {
+			t.Errorf("selected = %d, want 1", m.selected)
+		}
+		if m.scrollOff != 1 {
+			t.Errorf("scrollOff = %d, want 1", m.scrollOff)
+		}
+	})
+
+	t.Run("scrollOff stays 0 when list fits in viewport", func(t *testing.T) {
+		m := newModel("o/r", "1", 5*time.Second)
+		m.height = 30 // maxRows = 22, much more than 3 checks
+		m.hideSkipped = false
+		m.prData = &PRData{Checks: []Check{
+			{Name: "a", Status: Pass},
+			{Name: "b", Status: Pass},
+			{Name: "c", Status: Pass},
+		}}
+		m.selected = 0
+		m.scrollOff = 0
+
+		// Navigate through all items
+		for i := 0; i < 2; i++ {
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+			m = updated.(model)
+		}
+		if m.selected != 2 {
+			t.Errorf("selected = %d, want 2", m.selected)
+		}
+		if m.scrollOff != 0 {
+			t.Errorf("scrollOff = %d, want 0 (list fits in viewport)", m.scrollOff)
 		}
 	})
 }

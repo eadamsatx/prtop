@@ -66,22 +66,27 @@ type model struct {
 	// Selection mode fields
 	prs     []PRSummary
 	loading bool
+	// Filtering and scrolling
+	hideSkipped bool // default: true
+	scrollOff   int  // first visible row index (into filtered list)
 }
 
 func newModel(repo, prNumber string, interval time.Duration) model {
 	return model{
-		mode:     modeViewing,
-		repo:     repo,
-		prNumber: prNumber,
-		interval: interval,
+		mode:        modeViewing,
+		repo:        repo,
+		prNumber:    prNumber,
+		interval:    interval,
+		hideSkipped: true,
 	}
 }
 
 func newSelectModel(interval time.Duration) model {
 	return model{
-		mode:     modeSelecting,
-		interval: interval,
-		loading:  true,
+		mode:        modeSelecting,
+		interval:    interval,
+		loading:     true,
+		hideSkipped: true,
 	}
 }
 
@@ -90,6 +95,22 @@ func fetchPRListCmd() tea.Cmd {
 		prs, err := fetchRecentPRs()
 		return prListMsg{prs: prs, err: err}
 	}
+}
+
+func (m model) filteredChecks() []Check {
+	if m.prData == nil {
+		return nil
+	}
+	if !m.hideSkipped {
+		return m.prData.Checks
+	}
+	result := make([]Check, 0, len(m.prData.Checks))
+	for _, c := range m.prData.Checks {
+		if c.Status != Skipped {
+			result = append(result, c)
+		}
+	}
+	return result
 }
 
 func (m model) Init() tea.Cmd {
@@ -129,8 +150,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.prs) > 0 && m.selected < len(m.prs)-1 {
 					m.selected++
 				}
-			} else if m.prData != nil && m.selected < len(m.prData.Checks)-1 {
-				m.selected++
+			} else {
+				checks := m.filteredChecks()
+				if len(checks) > 0 && m.selected < len(checks)-1 {
+					m.selected++
+				}
 			}
 		case tea.KeyEnter:
 			if m.mode == modeSelecting {
@@ -140,14 +164,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.prNumber = fmt.Sprintf("%d", pr.Number)
 					m.mode = modeViewing
 					m.selected = 0
+					m.scrollOff = 0
 					m.prData = nil
 					m.err = nil
 					return m, tea.Batch(m.fetchCmd(), m.tickCmd())
 				}
-			} else if m.prData != nil && len(m.prData.Checks) > 0 {
-				check := m.prData.Checks[m.selected]
-				if check.DetailsURL != "" {
-					openBrowser(check.DetailsURL)
+			} else {
+				checks := m.filteredChecks()
+				if len(checks) > 0 {
+					check := checks[m.selected]
+					if check.DetailsURL != "" {
+						openBrowser(check.DetailsURL)
+					}
 				}
 			}
 		case tea.KeyRunes:
@@ -169,8 +197,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if len(m.prs) > 0 && m.selected < len(m.prs)-1 {
 						m.selected++
 					}
-				} else if m.prData != nil && m.selected < len(m.prData.Checks)-1 {
-					m.selected++
+				} else {
+					checks := m.filteredChecks()
+					if len(checks) > 0 && m.selected < len(checks)-1 {
+						m.selected++
+					}
+				}
+			case "s":
+				if m.mode == modeViewing {
+					m.hideSkipped = !m.hideSkipped
+					m.selected = 0
+					m.scrollOff = 0
 				}
 			}
 		}
@@ -191,10 +228,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.prData = msg.data
 			m.err = nil
-			// Clamp selection
-			if len(m.prData.Checks) > 0 {
-				if m.selected >= len(m.prData.Checks) {
-					m.selected = len(m.prData.Checks) - 1
+			// Clamp selection against filtered list
+			checks := m.filteredChecks()
+			if len(checks) > 0 {
+				if m.selected >= len(checks) {
+					m.selected = len(checks) - 1
 				}
 			} else {
 				m.selected = 0
@@ -207,6 +245,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+	}
+
+	// Keep selected in viewport
+	if m.selected < m.scrollOff {
+		m.scrollOff = m.selected
+	}
+	maxRows := m.height - 8
+	if maxRows < 1 {
+		maxRows = 1
+	}
+	if m.selected >= m.scrollOff+maxRows {
+		m.scrollOff = m.selected - maxRows + 1
 	}
 
 	return m, nil
@@ -358,11 +408,11 @@ func (m model) View() string {
 	// Blank line
 	b.WriteString("\n")
 
-	// Summary
-	checks := m.prData.Checks
-	total := len(checks)
+	// Summary (always count from unfiltered list for accurate totals)
+	allChecks := m.prData.Checks
+	total := len(allChecks)
 	counts := map[CheckStatus]int{}
-	for _, c := range checks {
+	for _, c := range allChecks {
 		counts[c.Status]++
 	}
 	summary := fmt.Sprintf("Checks: %d total", total)
@@ -382,6 +432,9 @@ func (m model) View() string {
 	if len(parts) > 0 {
 		summary += " - " + strings.Join(parts, ", ")
 	}
+	if m.hideSkipped && counts[Skipped] > 0 {
+		summary += fmt.Sprintf(" (%d hidden)", counts[Skipped])
+	}
 	b.WriteString(styleBold.Render(truncate(summary, maxWidth)))
 	b.WriteString("\n\n")
 
@@ -399,8 +452,15 @@ func (m model) View() string {
 		maxRows = 1
 	}
 
-	// Table rows
-	for idx, check := range checks {
+	// Table rows (use filtered list with scroll offset)
+	checks := m.filteredChecks()
+	visible := checks
+	if m.scrollOff < len(checks) {
+		visible = checks[m.scrollOff:]
+	} else {
+		visible = nil
+	}
+	for idx, check := range visible {
 		if idx >= maxRows {
 			break
 		}
@@ -421,7 +481,7 @@ func (m model) View() string {
 			}
 		}
 
-		isSelected := idx == m.selected
+		isSelected := (idx + m.scrollOff) == m.selected
 		marker := "  "
 		if isSelected {
 			marker = "> "
@@ -478,16 +538,21 @@ func (m model) View() string {
 	}
 
 	// Footer - pad to bottom of screen
-	linesUsed := 7 + len(checks)
-	if len(checks) > maxRows {
-		linesUsed = 7 + maxRows
+	visibleRows := len(visible)
+	if visibleRows > maxRows {
+		visibleRows = maxRows
 	}
+	linesUsed := 7 + visibleRows
 	for i := linesUsed; i < m.height-1; i++ {
 		b.WriteString("\n")
 	}
 
-	footer := fmt.Sprintf("Refresh: %ds | up/down: select | enter: open | r: refresh | q: quit",
-		int(m.interval.Seconds()))
+	filterHint := "s: show skipped"
+	if !m.hideSkipped {
+		filterHint = "s: hide skipped"
+	}
+	footer := fmt.Sprintf("Refresh: %ds | %s | up/down: select | enter: open | r: refresh | q: quit",
+		int(m.interval.Seconds()), filterHint)
 	b.WriteString(styleDim.Render(truncate(footer, maxWidth)))
 
 	return b.String()
