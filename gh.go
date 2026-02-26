@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+var execCommand = exec.Command
+
 // CheckStatus represents the normalized status of a check.
 // The iota ordering matches the desired sort order.
 type CheckStatus int
@@ -133,7 +135,7 @@ type PRSummary struct {
 }
 
 func fetchRecentPRs() ([]PRSummary, error) {
-	cmd := exec.Command("gh", "search", "prs",
+	cmd := execCommand("gh", "search", "prs",
 		"--author=@me",
 		"--state=open",
 		"--sort=updated",
@@ -175,7 +177,7 @@ func fetchRecentPRs() ([]PRSummary, error) {
 }
 
 func fetchPRData(repo string, prNumber string) (*PRData, error) {
-	cmd := exec.Command("gh", "pr", "view", prNumber,
+	cmd := execCommand("gh", "pr", "view", prNumber,
 		"--repo", repo,
 		"--json", "statusCheckRollup,title,headRefName,url",
 	)
@@ -219,12 +221,17 @@ func fetchPRData(repo string, prNumber string) (*PRData, error) {
 			completedAt = ""
 		}
 
-		// StatusContext items don't have completedAt — treat terminal states as completed
+		// StatusContext items (e.g. Jenkins) don't provide completedAt
+		var forceCompleted bool
 		if completedAt == "" && item.Typename == "StatusContext" && status != Running {
-			completedAt = item.StartedAt
+			forceCompleted = true
 		}
 
 		dur, startedAt, completed := parseDuration(item.StartedAt, completedAt)
+		if forceCompleted {
+			completed = true
+			dur = "???"
+		}
 
 		detailsURL := item.DetailsURL
 		if detailsURL == "" {
