@@ -235,6 +235,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case prDataMsg:
+		if m.mode != modeViewing {
+			break
+		}
 		if msg.err != nil {
 			m.err = msg.err
 		} else {
@@ -252,7 +255,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
-		return m, tea.Batch(m.fetchCmd(), m.tickCmd())
+		if m.mode == modeViewing {
+			return m, tea.Batch(m.fetchCmd(), m.tickCmd())
+		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width

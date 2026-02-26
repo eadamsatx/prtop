@@ -944,3 +944,44 @@ func TestScrollOffset(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// tick/prDataMsg guards on mode
+// ---------------------------------------------------------------------------
+
+func TestTickIgnoredInSelectingMode(t *testing.T) {
+	m := newSelectModel(5 * time.Second)
+	m.prs = []PRSummary{{Repo: "a"}}
+	m.loading = false
+
+	updated, cmd := m.Update(tickMsg(time.Now()))
+	um := updated.(model)
+	if cmd != nil {
+		t.Error("tickMsg in selecting mode should return nil cmd (stop tick loop)")
+	}
+	if um.mode != modeSelecting {
+		t.Errorf("mode = %v, want modeSelecting", um.mode)
+	}
+}
+
+func TestPRDataMsgIgnoredInSelectingMode(t *testing.T) {
+	m := newSelectModel(5 * time.Second)
+	m.prs = []PRSummary{{Repo: "a"}}
+	m.loading = false
+	m.err = nil
+
+	// Simulate a stale prDataMsg arriving after user pressed Esc
+	updated, _ := m.Update(prDataMsg{err: fmt.Errorf("stale error")})
+	um := updated.(model)
+	if um.err != nil {
+		t.Errorf("err = %v, want nil (prDataMsg should be ignored in selecting mode)", um.err)
+	}
+
+	// Also verify successful prDataMsg is ignored
+	data := &PRData{Checks: []Check{{Name: "a"}}}
+	updated, _ = m.Update(prDataMsg{data: data})
+	um = updated.(model)
+	if um.prData != nil {
+		t.Error("prData should remain nil (prDataMsg should be ignored in selecting mode)")
+	}
+}

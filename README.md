@@ -45,6 +45,14 @@ prtop --interval 10 owner/repo 123
 
 When run with no arguments, `prtop` shows your 5 most recent open PRs (across all repos) and lets you pick one to view.
 
+## Note: API Rate Limits
+
+prtop polls the GitHub API via `gh` at the configured interval (default 5 seconds), consuming approximately 720 requests/hour. GitHub's authenticated rate limit is 5,000 requests/hour, so this is fine for normal use. However, running multiple instances simultaneously or setting a very low `--interval` could consume your rate limit more quickly. You can increase the interval to reduce API usage:
+
+```sh
+prtop --interval 30 owner/repo 123  # ~120 requests/hour
+```
+
 ## Keybindings
 
 | Key         | Action                        |
